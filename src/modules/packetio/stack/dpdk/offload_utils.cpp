@@ -1,6 +1,14 @@
 #include <cassert>
-#include "rte_ip.h"  /* ip pseudo header cksum */
-#include "rte_net.h" /* ptype info */
+
+/*
+ * DPDK requires this to be set for ARM64 else it won't compile.
+ */
+#ifdef __aarch64__
+#define RTE_FORCE_INTRINSICS
+#endif
+
+#include "rte_ip.h"   /* ip pseudo header cksum */
+#include "rte_net.h"  /* ptype info */
 
 #include "packetio/stack/dpdk/offload_utils.hpp"
 #include "core/op_log.h"
