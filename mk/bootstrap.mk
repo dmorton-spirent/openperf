@@ -16,7 +16,7 @@ OP_AR := llvm-ar
 OP_ARFLAGS := rcs
 OP_CC := $(CC) -flto=thin
 OP_CXX := $(CXX) -flto=thin
-OP_COPTS := -march=native
+OP_COPTS :=
 OP_CSTD := -std=gnu11  # c++11 with GNU extensions
 OP_CXXSTD := -std=c++17
 OP_CFLAGS := $(OP_CSTD)

@@ -2,6 +2,8 @@
 # x86_64 specific options
 #
 
+OP_COPTS += -march=native
+
 # At a minimum, we need the following x86 CPU flags to compile.
 # mcx16: Enable compare-and-exchange for 16-byte aligned 128 bit objects
 # mssse3: SSSE3 instructions are needed for some included DPDK headers, e.g. rte_memcpy.h
