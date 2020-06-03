@@ -54,14 +54,24 @@ io_channel_wrapper::~io_channel_wrapper()
     } catch (...) {}
 }
 
-io_channel_wrapper::io_channel_wrapper(io_channel_wrapper&& other)
+io_channel_wrapper::io_channel_wrapper([[maybe_unused]]io_channel_wrapper&& other)
 {
-    std::swap(m_channel, other.m_channel);
+    //FIXME: this is a hack for compatibility with GCC 8.2 (aka STC's compiler).
+    //std::swap(m_channel, other.m_channel);
+    auto temp = std::move(m_channel);
+    m_channel = std::move(other.m_channel);
+    other.m_channel = std::move(temp);
 }
 
-io_channel_wrapper& io_channel_wrapper::operator=(io_channel_wrapper&& other)
+io_channel_wrapper& io_channel_wrapper::operator=([[maybe_unused]]io_channel_wrapper&& other)
 {
-    if (this != &other) { std::swap(m_channel, other.m_channel); }
+    //FIXME: this is a hack for compatibility with GCC 8.2 (aka STC's compiler).
+    //if (this != &other) { std::swap(m_channel, other.m_channel); }
+    if (this != &other) {
+        auto temp = std::move(m_channel);
+        m_channel = std::move(other.m_channel);
+        other.m_channel = std::move(temp);
+    }
     return (*this);
 }
 

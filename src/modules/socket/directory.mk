@@ -3,7 +3,8 @@ SOCK_COMMON += \
 	shared_segment.cpp \
 	unix_socket.cpp
 
-ifeq ($(PLATFORM),linux)
+#ifeq ($(PLATFORM),linux)
+ifneq (, $(filter $(PLATFORM), linux stc))
 	SOCK_COMMON += process_control_linux.cpp
 	SOCKSRV_LDLIBS += -lcap
 	SOCKCLI_LDLIBS += -lcap

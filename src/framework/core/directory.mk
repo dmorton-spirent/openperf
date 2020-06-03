@@ -14,7 +14,7 @@ FW_SOURCES += \
 	core/op_task.c \
 	core/op_version.c
 
-ifeq ($(PLATFORM), linux)
+ifneq (, $(filter $(PLATFORM), linux stc))
 	FW_LDLIBS += -rdynamic
 	FW_SOURCES += \
 	core/op_event_loop_epoll.c \
