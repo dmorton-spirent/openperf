@@ -25,7 +25,8 @@ ifeq ($(ARCH),x86_64)
 	CPU_TEST_SOURCES += instruction_set_x86.cpp
 endif
 
-ifeq ($(PLATFORM), linux)
+#ifeq ($(PLATFORM), linux)
+ifneq (, $(filter $(PLATFORM), linux stc))
 	CPU_SOURCES += cpu_linux.cpp
 endif
 
