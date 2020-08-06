@@ -29,6 +29,10 @@ ifeq ($(MODE),debug)
 	LIBZMQ_CONFIG_OPTS += --enable-debug
 endif
 
+ifeq ($(PLATFORM), stc)
+	OP_CXXOPTS += -Wno-unused-command-line-argument
+endif
+
 $(LIBZMQ_OBJ_DIR)/Makefile: $(LIBZMQ_SRC_DIR)/configure
 	@mkdir -p $(LIBZMQ_OBJ_DIR)
 	cd $(LIBZMQ_OBJ_DIR) && $(LIBZMQ_SRC_DIR)/configure $(OP_CONFIG_OPTS) \
