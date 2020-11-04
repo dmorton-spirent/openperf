@@ -27,6 +27,11 @@ LIBPCAP_CONFIG_OPTS += \
 	--enable-shared=no \
 	--without-libnl
 
+#ifeq ($(PLATFORM), stc)
+#	OP_CXXOPTS += "-I /export/crosstools/spirent-yocto-1.5/x86_64/target/usr/include/libnl3/"
+#	OP_INC_DIRS += /export/crosstools/spirent-yocto-1.5/x86_64/target/usr/include/libnl3/
+#endif
+
 ###
 # Build rules
 ###
@@ -39,6 +44,9 @@ $(LIBPCAP_OBJ_DIR)/Makefile: $(LIBPCAP_SRC_DIR)/configure
 		$(LIBPCAP_CONFIG_OPTS) --prefix="$(LIBPCAP_BLD_DIR)" \
 		CC="$(CC)" CFLAGS="$(OP_COPTS) $(OP_EXTRA_CFLAGS)" \
 		CXX="$(CXX)" CXXFLAGS="$(OP_CXXOPTS) $(OP_EXTRA_CXXFLAGS)"
+		#CC="$(CC)" CFLAGS="$(OP_COPTS)" \
+		#CXX="$(CXX)" CXXFLAGS="$(OP_CXXOPTS)"
+		#CXX="$(CXX)" CXXFLAGS="$(OP_CXXOPTS) -I /export/crosstools/spirent-yocto-1.5/x86_64/target/usr/include/libnl3/"
 
 # DPDK and libpcap both have a bpf_validate() function
 # Since this function appears to be included for compatibility reasons
