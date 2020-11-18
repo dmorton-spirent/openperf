@@ -7,13 +7,14 @@
 #include <typeindex>
 
 #include "units/rate.hpp"
+#include "units/data-rates.hpp"
 #include "utils/enum_flags.hpp"
 
 namespace openperf::packetio::packet {
 
 struct packet_buffer;
 
-using packets_per_hour = openperf::units::rate<uint64_t, std::ratio<1, 3600>>;
+using packets_per_hour = openperf::units::items_per_hour;
 
 enum class source_feature_flags {
     none = 0,

@@ -28,6 +28,8 @@ typedef std::ratio_multiply<gibibits, std::ratio<8>> gibibytes;
 typedef std::ratio_multiply<terabits, std::ratio<8>> terabytes;
 typedef std::ratio_multiply<tebibits, std::ratio<8>> tebibytes;
 
+using items_per_hour = rate<uint64_t, std::ratio<1, 3600>>;
+
 } // namespace openperf::units
 
 #endif /* _OP_UNITS_DATA_RATES_HPP_ */
