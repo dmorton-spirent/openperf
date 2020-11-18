@@ -68,6 +68,8 @@ private:
 
     /* result id --> result */
     result_map m_results;
+
+    std::optional<source_value_type> get_source(std::string_view id);
 };
 
 } // namespace openperf::packet::generator::api

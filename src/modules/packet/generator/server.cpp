@@ -330,8 +330,18 @@ reply_msg server::handle_request(const request_create_generator& request)
 reply_msg server::handle_request(const request_delete_generators&)
 {
     /* Delete all inactive results */
-    erase_if(m_results, [](const auto& pair) {
-        return (!pair.second->parent().active());
+    erase_if(m_results, [&](const auto& pair) {
+        auto maybe_source = get_source(pair.second->parent_id());
+        if (!maybe_source) {
+            OP_LOG(OP_LOG_WARNING,
+                   "Deleting orphan generator result %s. Parent id %s was not "
+                   "found.",
+                   to_string(pair.first).c_str(),
+                   pair.second->parent_id().c_str());
+            return (true);
+        }
+
+        return (!maybe_source.value().active());
     });
 
     /*
@@ -382,7 +392,7 @@ reply_msg server::handle_request(const request_delete_generator& request)
         && !result->first.template get<source>().active()) {
         /* Delete this generators result objects */
         erase_if(m_results, [&](const auto& pair) {
-            return (pair.second->parent().id() == request.id);
+            return (pair.second->parent_id() == request.id);
         });
 
         /* Delete this generator */
@@ -416,8 +426,10 @@ reply_msg server::handle_request(const request_start_generator& request)
 
     auto& impl = found->first.template get<source>();
 
-    auto item = m_results.emplace(get_unique_result_id(m_results),
-                                  std::make_unique<source_result>(impl));
+    auto item = m_results.emplace(
+        get_unique_result_id(m_results),
+        std::make_unique<source_result>(
+            impl.id(), impl.target(), impl.protocol_counters()));
     assert(item.second); /* source_result inserted */
 
     auto& id = item.first->first;
@@ -432,7 +444,13 @@ reply_msg server::handle_request(const request_start_generator& request)
     }
 
     auto reply = reply_generator_results{};
-    reply.generator_results.emplace_back(to_swagger(id, *result));
+    reply.generator_results.emplace_back(
+        to_swagger(id,
+                   *result,
+                   impl.packet_rate(),
+                   impl.sequence(),
+                   impl.config()->getDuration(),
+                   impl.tx_limit()));
     return (reply);
 }
 
@@ -590,8 +608,10 @@ reply_msg server::handle_request(const request_toggle_generator& request)
     }
 
     auto& in_impl = in_found->first.template get<source>();
-    auto item = m_results.emplace(get_unique_result_id(m_results),
-                                  std::make_unique<source_result>(in_impl));
+    auto item = m_results.emplace(
+        get_unique_result_id(m_results),
+        std::make_unique<source_result>(
+            in_impl.id(), in_impl.target(), in_impl.protocol_counters()));
     assert(item.second);
 
     auto& id = item.first->first;
@@ -613,7 +633,13 @@ reply_msg server::handle_request(const request_toggle_generator& request)
 
     /* Return the new result to the user */
     auto reply = reply_generator_results{};
-    reply.generator_results.emplace_back(to_swagger(id, *result));
+    reply.generator_results.emplace_back(
+        to_swagger(id,
+                   *result,
+                   in_impl.packet_rate(),
+                   in_impl.sequence(),
+                   in_impl.config()->getDuration(),
+                   in_impl.tx_limit()));
     return (reply);
 }
 
@@ -629,13 +655,12 @@ reply_msg server::handle_request(const request_list_generator_results& request)
         compare = [&](const auto& item) {
             if (filter.count(filter_type::generator_id)
                 && filter[filter_type::generator_id]
-                       != item.second->parent().id()) {
+                       != item.second->parent_id()) {
                 return (false);
             }
 
             if (filter.count(filter_type::target_id)
-                && filter[filter_type::target_id]
-                       != item.second->parent().target()) {
+                && filter[filter_type::target_id] != item.second->target_id()) {
                 return (false);
             }
 
@@ -649,8 +674,26 @@ reply_msg server::handle_request(const request_list_generator_results& request)
                  std::end(m_results),
                  std::back_inserter(reply.generator_results),
                  compare,
-                 [](const auto& item) {
-                     return (to_swagger(item.first, *item.second));
+                 [&](const auto& item) {
+                     auto maybe_source = get_source(item.second->parent_id());
+                     if (!maybe_source) {
+                         std::string err = "Cannot find generator parent "
+                                           + item.second->parent_id()
+                                           + " of result "
+                                           + to_string(item.first);
+
+                         throw std::runtime_error(err);
+                     }
+
+                     auto& source_impl =
+                         maybe_source.value().template get<source>();
+
+                     return (to_swagger(item.first,
+                                        *item.second,
+                                        source_impl.packet_rate(),
+                                        source_impl.sequence(),
+                                        source_impl.config()->getDuration(),
+                                        source_impl.tx_limit()));
                  });
 
     return (reply);
@@ -659,8 +702,18 @@ reply_msg server::handle_request(const request_list_generator_results& request)
 reply_msg server::handle_request(const request_delete_generator_results&)
 {
     /* Delete all inactive results */
-    erase_if(m_results, [](const auto& pair) {
-        return (!pair.second->parent().active());
+    erase_if(m_results, [&](const auto& pair) {
+        auto maybe_source = get_source(pair.second->parent_id());
+        if (!maybe_source) {
+            OP_LOG(OP_LOG_WARNING,
+                   "Deleting orphan generator result %s. Parent id %s was not "
+                   "found.",
+                   to_string(pair.first).c_str(),
+                   pair.second->parent_id().c_str());
+            return (true);
+        }
+
+        return (!maybe_source.value().active());
     });
 
     return (reply_ok{});
@@ -676,9 +729,21 @@ reply_msg server::handle_request(const request_get_generator_result& request)
         return (to_error(error_type::NOT_FOUND));
     }
 
+    auto maybe_source = get_source(result->second->parent_id());
+    if (!maybe_source) {
+        // FIXME: error handling?
+    }
+
+    auto& source_impl = maybe_source.value().template get<source>();
+
     auto reply = reply_generator_results{};
     reply.generator_results.emplace_back(
-        to_swagger(result->first, *result->second));
+        to_swagger(result->first,
+                   *result->second,
+                   source_impl.packet_rate(),
+                   source_impl.sequence(),
+                   source_impl.config()->getDuration(),
+                   source_impl.tx_limit()));
     return (reply);
 }
 
@@ -703,13 +768,12 @@ reply_msg server::handle_request(const request_list_tx_flows& request)
         compare = [&](const auto& item) {
             if (filter.count(filter_type::generator_id)
                 && filter[filter_type::generator_id]
-                       != item.second->parent().id()) {
+                       != item.second->parent_id()) {
                 return (false);
             }
 
             if (filter.count(filter_type::target_id)
-                && filter[filter_type::target_id]
-                       != item.second->parent().target()) {
+                && filter[filter_type::target_id] != item.second->target_id()) {
                 return (false);
             }
 
@@ -730,11 +794,28 @@ reply_msg server::handle_request(const request_list_tx_flows& request)
                       auto offset = 0U;
                       std::generate_n(
                           std::back_inserter(reply.flows), flows.size(), [&]() {
+                              auto maybe_source =
+                                  get_source(result_pair.second->parent_id());
+                              if (!maybe_source) {
+                                  std::string err =
+                                      "Cannot find generator parent "
+                                      + result_pair.second->parent_id()
+                                      + " of result "
+                                      + to_string(result_pair.first);
+
+                                  throw std::runtime_error(err);
+                              }
+
+                              auto& source_impl =
+                                  maybe_source.value().template get<source>();
+
                               auto flow_ptr = to_swagger(
                                   tx_flow_id(result_pair.first, offset),
                                   result_pair.first,
                                   *result_pair.second,
-                                  offset);
+                                  offset,
+                                  source_impl.packet_rate(),
+                                  source_impl.sequence());
                               offset++;
                               return (flow_ptr);
                           });
@@ -758,9 +839,31 @@ reply_msg server::handle_request(const request_get_tx_flow& request)
         return (to_error(error_type::NOT_FOUND));
     }
 
+    auto maybe_source = get_source(result->parent_id());
+    if (!maybe_source) {
+        // FIXME: error handling?
+    }
+
+    auto& source_impl = maybe_source.value().template get<source>();
+
     auto reply = reply_tx_flows{};
-    reply.flows.emplace_back(to_swagger(*id, it->first, *result, flow_idx));
+    reply.flows.emplace_back(to_swagger(*id,
+                                        it->first,
+                                        *result,
+                                        flow_idx,
+                                        source_impl.packet_rate(),
+                                        source_impl.sequence()));
     return (reply);
+}
+
+std::optional<server::source_value_type> server::get_source(std::string_view id)
+{
+    auto maybe_source = binary_find(
+        std::begin(m_sources), std::end(m_sources), id, source_id_comparator{});
+
+    if (maybe_source == std::end(m_sources)) { return {}; }
+
+    return std::make_optional(maybe_source->first);
 }
 
 } // namespace openperf::packet::generator::api

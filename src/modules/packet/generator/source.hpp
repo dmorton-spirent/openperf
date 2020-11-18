@@ -30,7 +30,8 @@ class source;
 class source_result
 {
 private:
-    const source& m_parent;
+    const std::string m_parent_id;
+    const std::string m_target_id;
     std::vector<traffic::counter> m_flows;
 
     using protocol_counters = packet::statistics::generic_protocol_counters;
@@ -39,10 +40,11 @@ private:
     bool m_active = false;
 
 public:
-    source_result(const source& src);
+    source_result(std::string parent_id, std::string target_id, const api::protocol_counters_config& protocols);
 
     bool active() const;
-    const source& parent() const;
+    std::string parent_id() const;
+    std::string target_id() const;
 
     const std::vector<traffic::counter>& flows() const;
     traffic::counter& operator[](size_t idx);

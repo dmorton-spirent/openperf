@@ -16,6 +16,7 @@
 #include "packet/generator/traffic/sequence.hpp"
 #include "packet/statistics/generic_protocol_counters.hpp"
 #include "units/rate.hpp"
+#include "units/data-rates.hpp"
 
 namespace swagger::v1::model {
 
@@ -306,13 +307,20 @@ const char* to_string(const reply_error& error);
 
 generator_ptr to_swagger(const source&);
 
-generator_result_ptr to_swagger(const core::uuid& id,
-                                const source_result& result);
+generator_result_ptr
+to_swagger(const core::uuid& id,
+           const source_result& result,
+           openperf::units::items_per_hour packet_rate,
+           const traffic::sequence& sequence,
+           const std::shared_ptr<swagger::v1::model::TrafficDuration>& duration,
+           std::optional<size_t> tx_limit);
 
 tx_flow_ptr to_swagger(const core::uuid& id,
                        const core::uuid& result_id,
                        const source_result& result,
-                       size_t flow_idx);
+                       size_t flow_idx,
+                       openperf::units::items_per_hour packet_rate,
+                       const traffic::sequence& sequence);
 
 core::uuid get_generator_result_id();
 

@@ -42,14 +42,17 @@ struct flag_lock
     ~flag_lock() { flag_.clear(std::memory_order_release); }
 };
 
-source_result::source_result(const source& src)
-    : m_parent(src)
-    , m_protocols(packet::statistics::make_counters(src.protocol_counters()))
+source_result::source_result(std::string parent_id, std::string target_id, const api::protocol_counters_config& protocols)
+    : m_parent_id(parent_id)
+    , m_target_id(target_id)
+    , m_protocols(packet::statistics::make_counters(protocols))
 {}
 
 bool source_result::active() const { return (m_active); }
 
-const source& source_result::parent() const { return (m_parent); }
+std::string source_result::parent_id() const { return (m_parent_id); }
+
+std::string source_result::target_id() const { return (m_target_id); }
 
 const std::vector<traffic::counter>& source_result::flows() const
 {
