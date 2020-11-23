@@ -8,6 +8,8 @@
 #include "swagger/v1/model/PacketGeneratorResult.h"
 #include "swagger/v1/model/TxFlow.h"
 
+#include "packet/generator/learning.hpp"
+
 namespace openperf::packet::generator::api {
 
 /**
@@ -354,6 +356,8 @@ reply_msg server::handle_request(const request_delete_generators&)
     return (reply_ok{});
 }
 
+learning_state_machine lsm;
+
 reply_msg server::handle_request(const request_get_generator& request)
 {
     auto result = binary_find(std::begin(m_sources),
@@ -363,6 +367,75 @@ reply_msg server::handle_request(const request_get_generator& request)
 
     if (result == std::end(m_sources)) {
         return (to_error(error_type::NOT_FOUND));
+    }
+
+    // FIXME: hijacking this handler to initiate learning.
+    // This is just for prototyping.
+    std::cout << "hello world from request_get_generator" << std::endl;
+
+    auto& gen_ref = result->first.template get<source>();
+
+    auto maybe_interface = m_client.interface(gen_ref.target());
+    if (maybe_interface.has_value()) {
+        std::cout << "got interface id: " << maybe_interface.value().id()
+                  << std::endl;
+    } else {
+        std::cout << "got error while looking up an interface: "
+                  << std::strerror(maybe_interface.error()) << std::endl;
+    }
+
+    auto intf_impl = maybe_interface.value();
+    auto intf_data = intf_impl.data();
+    auto netif_target = std::any_cast<const netif*>(intf_data);
+
+    learning_params lp;
+    lp.intf = const_cast<netif*>(netif_target);
+
+    lp.ipv4_addresses.push_back("198.51.100.20");
+
+    lsm.start_learning(lp);
+
+    sleep(2);
+
+    // FIXME: this is all for prototype tests.
+    // In production the call to check_learning will be done in the event loop.
+    // Also, the event loop callback will check if all addresses resolved and start
+    // frame template update iff all addresses resolved.
+    // Need to figure out a timeout if addresses don't resolve. The table won't tell you if they're
+    // in progress or timed out. Probably need to establish a maximum duration and stick to that.
+    // Not ideal, but not sure if the API gives us access to much else.
+    // Also need to make sure that when really_check_learning is called another copy isn't still running.
+    // Probably looking at several bool flags either in the class or in the learning.cpp file.
+    // It's probably safer to check if another one is running and just return rather than waiting. It's a timer
+    // loop and it'll get called again.
+    bool resolved = false;
+    for (int i = 0; i < 10; i++) {
+        lsm.check_learning();
+
+        auto results = lsm.get_results();
+        std::cout << "got this many results: " << results.results.size()
+                  << std::endl;
+        std::for_each(
+            results.results.begin(),
+            results.results.end(),
+            [&](auto& item_pair) {
+                std::cout << item_pair.first << " ";
+                // FIXME: good canditate for overloaded_visitor.
+                const auto maybe_mac = item_pair.second;
+                if (auto pval =
+                        std::get_if<libpacket::type::mac_address>(&maybe_mac)) {
+                    std::cout << *pval << std::endl;
+
+                    resolved = true;
+                } else {
+                    std::cout << "<unresolved>" << std::endl;
+                }
+                // std::cout << item_pair.second << std::endl;
+            });
+
+        if (resolved) break;
+
+        sleep(1);
     }
 
     auto reply = reply_generators{};
