@@ -178,6 +178,11 @@ void update_packet_header_lengths(
         auto ipv4 = reinterpret_cast<libpacket::protocol::ipv4*>(
             packet + hdr_lens.layer2);
         set_ipv4_total_length(*ipv4, pkt_len - hdr_lens.layer2);
+
+        //FIXME: for debugging only!
+        // THis outputs what's in the config file not what gets updated in server.cpp
+        auto eth = reinterpret_cast<libpacket::protocol::ethernet*>(packet);
+        std::cout << "in update_packet_header_lengths, dest mac is: " << get_ethernet_destination(*eth) << std::endl;
     }
     if (hdr_flags & packet_type::ip::ipv6) {
         auto ipv6 = reinterpret_cast<libpacket::protocol::ipv6*>(

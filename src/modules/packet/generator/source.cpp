@@ -286,6 +286,10 @@ uint16_t source::transform(packetio::packet::packet_buffer* input[],
                 auto* pkt = packetio::packet::to_data<uint8_t>(buffer);
                 utils::memcpy(pkt, hdr_ptr, std::min(hdr_len, pkt_len));
 
+                // This outputs what's in the config file not what gets set in server.cpp
+                auto eth = reinterpret_cast<const libpacket::protocol::ethernet*>(hdr_ptr);
+                std::cout << "in source.transform(), hdr_ptr dest mac is: " << get_ethernet_destination(*eth) << std::endl;
+
                 /* Set length on both buffer and headers*/
                 packetio::packet::length(buffer, pkt_len - 4);
                 traffic::update_packet_header_lengths(
