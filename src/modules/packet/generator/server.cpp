@@ -395,48 +395,75 @@ reply_msg server::handle_request(const request_get_generator& request)
 
     lsm.start_learning(lp);
 
-    sleep(2);
+    while (lsm.in_progress()) {
+        lsm.check_learning();
+        sleep(1);
+    }
+
+    auto& results = lsm.get_results();
+
+    std::cout << "\n learning results:" << std::endl;
+    std::for_each(
+        results.results.begin(), results.results.end(), [&](auto& item_pair) {
+            std::cout << item_pair.first << " ";
+            // FIXME: good canditate for overloaded_visitor.
+            const auto maybe_mac = item_pair.second;
+            if (auto pval =
+                    std::get_if<libpacket::type::mac_address>(&maybe_mac)) {
+                std::cout << *pval << std::endl;
+
+            } else {
+                std::cout << "<unresolved>" << std::endl;
+            }
+            // std::cout << item_pair.second << std::endl;
+        });
+
+    std::cout << std::endl;
+    // sleep(2);
 
     // FIXME: this is all for prototype tests.
     // In production the call to check_learning will be done in the event loop.
-    // Also, the event loop callback will check if all addresses resolved and start
-    // frame template update iff all addresses resolved.
-    // Need to figure out a timeout if addresses don't resolve. The table won't tell you if they're
-    // in progress or timed out. Probably need to establish a maximum duration and stick to that.
-    // Not ideal, but not sure if the API gives us access to much else.
-    // Also need to make sure that when really_check_learning is called another copy isn't still running.
-    // Probably looking at several bool flags either in the class or in the learning.cpp file.
-    // It's probably safer to check if another one is running and just return rather than waiting. It's a timer
-    // loop and it'll get called again.
-    bool resolved = false;
-    for (int i = 0; i < 10; i++) {
-        lsm.check_learning();
+    // Also, the event loop callback will check if all addresses resolved and
+    // start frame template update iff all addresses resolved. Need to figure
+    // out a timeout if addresses don't resolve. The table won't tell you if
+    // they're in progress or timed out. Probably need to establish a maximum
+    // duration and stick to that. Not ideal, but not sure if the API gives us
+    // access to much else. Also need to make sure that when
+    // really_check_learning is called another copy isn't still running.
+    // Probably looking at several bool flags either in the class or in the
+    // learning.cpp file. It's probably safer to check if another one is running
+    // and just return rather than waiting. It's a timer loop and it'll get
+    // called again.
+    // bool resolved = false;
+    // for (int i = 0; i < 10; i++) {
+    //     lsm.check_learning();
 
-        auto results = lsm.get_results();
-        std::cout << "got this many results: " << results.results.size()
-                  << std::endl;
-        std::for_each(
-            results.results.begin(),
-            results.results.end(),
-            [&](auto& item_pair) {
-                std::cout << item_pair.first << " ";
-                // FIXME: good canditate for overloaded_visitor.
-                const auto maybe_mac = item_pair.second;
-                if (auto pval =
-                        std::get_if<libpacket::type::mac_address>(&maybe_mac)) {
-                    std::cout << *pval << std::endl;
+    //     auto results = lsm.get_results();
+    //     std::cout << "got this many results: " << results.results.size()
+    //               << std::endl;
+    //     std::for_each(
+    //         results.results.begin(),
+    //         results.results.end(),
+    //         [&](auto& item_pair) {
+    //             std::cout << item_pair.first << " ";
+    //             // FIXME: good canditate for overloaded_visitor.
+    //             const auto maybe_mac = item_pair.second;
+    //             if (auto pval =
+    //                     std::get_if<libpacket::type::mac_address>(&maybe_mac))
+    //                     {
+    //                 std::cout << *pval << std::endl;
 
-                    resolved = true;
-                } else {
-                    std::cout << "<unresolved>" << std::endl;
-                }
-                // std::cout << item_pair.second << std::endl;
-            });
+    //                 resolved = true;
+    //             } else {
+    //                 std::cout << "<unresolved>" << std::endl;
+    //             }
+    //             // std::cout << item_pair.second << std::endl;
+    //         });
 
-        if (resolved) break;
+    //     if (resolved) break;
 
-        sleep(1);
-    }
+    //     sleep(1);
+    // }
 
     auto reply = reply_generators{};
     reply.generators.emplace_back(

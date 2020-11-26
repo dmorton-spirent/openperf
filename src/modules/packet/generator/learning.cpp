@@ -28,6 +28,13 @@ static void really_start_learning(void* arg)
 
     std::for_each(
         lp->ipv4_addresses.begin(), lp->ipv4_addresses.end(), [&](auto& addr) {
+
+            //FIXME: eventually we'll get the result map here. read-only of course.
+            // Iterate through it and try to learn all IPs that have a corresponding MAC in unresolved state.
+            // This will let us do retry the same way we do regular learning.
+            // Especially since the stack automatically retries things for us. So our retry is just gravy.
+            // OR could make manual control over learning only retry failed items...
+
             ip4_addr_t target;
             // FIXME: need to memcpy stuff here. addr.data() returns a pointer
             // to the first octet of the ip addr.
@@ -54,9 +61,14 @@ static void really_start_learning(void* arg)
     // }
 }
 
-void learning_state_machine::start_learning(learning_params& lp)
+// Return true if learning started, false otherwise.
+bool learning_state_machine::start_learning(learning_params& lp)
 {
-    // FIXME: add learning status check here. If we're already learning, don't start again.
+    // If we're already learning, don't start again.
+    if (in_progress()) { return (false); }
+
+    current_state = state_start{};
+
     params = std::move(lp);
     results.results.clear();
 
@@ -69,10 +81,21 @@ void learning_state_machine::start_learning(learning_params& lp)
             return (std::make_pair(ip_addr, learning_results::unresolved{}));
         });
 
-    tcpip_callback(really_start_learning, &this->params);
+    if (auto res = tcpip_callback(really_start_learning, &this->params);
+        res != ERR_OK) {
+        current_state = state_timeout{};
+        return (false);
+    }
+
+    // FIXME: add callback here to start periodically polling learning results.
+    // For now have the caller simulate the behavior.
+
+    current_state = state_learning{};
+
+    return (true);
 }
 
-static void really_check_learning(void* arg)
+static void check_arp_cache(void* arg)
 {
     auto results = reinterpret_cast<learning_results*>(arg);
 
@@ -173,14 +196,33 @@ static void really_check_learning(void* arg)
     //     std::cout << "got error back from etharp_query!" << std::endl;
 }
 
+bool all_addresses_resolved(const learning_results& results)
+{
+    auto first_unresolved = std::find_if(
+        results.results.begin(), results.results.end(), [](auto& address_pair) {
+            return std::holds_alternative<learning_results::unresolved>(
+                address_pair.second);
+        });
+
+    return (first_unresolved == results.results.end());
+}
+
 void learning_state_machine::check_learning()
 {
-    if (results.results.empty()) { return; }
+    // FIXME: need this?
+    // if (results.results.empty()) { return; }
 
-    // FIXME: make sure this is only called once at a time. Running multiple copies at the same time
-    // could cause serious problems with updating the data structure.
+    // FIXME: make sure this is only called once at a time. Running multiple
+    // copies at the same time could cause serious problems with updating the
+    // data structure.
 
-    tcpip_callback(really_check_learning, &this->results);
+    tcpip_callback(check_arp_cache, &this->results);
+    //FIXME: check_arp_cache doesn't do much. safest to block while the check is being done.
+    usleep(500000); // simulate blocking while callback does its thing. 0.5 seconds.
+
+    if (all_addresses_resolved(results)) {
+        current_state = state_done{};
+    }
 }
 
 } // namespace openperf::packet::generator
