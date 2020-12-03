@@ -8,6 +8,11 @@
 #include "swagger/v1/model/PacketGeneratorResult.h"
 #include "swagger/v1/model/TxFlow.h"
 
+// FIXME: for development only!
+#include "lwip/netif.h"
+#include <set>
+#include "arpa/inet.h"
+
 namespace openperf::packet::generator::api {
 
 /**
@@ -423,22 +428,63 @@ reply_msg server::handle_request(const request_start_generator& request)
 
     auto& impl = found->first.template get<source>();
 
-    auto ipv4_gateway = libpacket::type::ipv4_address("198.51.100.1");
-    auto ipv4_netmask = libpacket::type::ipv4_address("255.255.255.0");
+    //auto ipv4_gateway = libpacket::type::ipv4_address("198.51.100.1");
+    //auto ipv4_netmask = libpacket::type::ipv4_address("255.255.255.0");
+
+    // auto maybe_interface = m_client.interface(gen.target());
+    auto maybe_interface = m_client.interface("interface-one");
+    if (maybe_interface.has_value()) {
+        std::cout << "got interface id: " << maybe_interface.value().id()
+                  << std::endl;
+    } else {
+        std::cout << "got error while looking up an interface: "
+                  << std::strerror(maybe_interface.error()) << std::endl;
+    }
+
+    auto intf_impl = maybe_interface.value();
+    auto intf_data = intf_impl.data();
+    [[maybe_unused]] auto netif_target = std::any_cast<const netif*>(intf_data);
+
+    // ip_addr_t ip_addr;
+    // ip_addr_t netmask;
+    // ip_addr_t gw;
+
+    // FIXME: be careful here! netif_target->{gw, netmask, addr} all return a
+    // union type that could be either an ipv4 OR ipv6 address. Need to read the
+    // docs to figure out how to tell if netif_target is ipv4 or ipv6. For now
+    // assume IPv4.
+    auto ipv4_gateway =
+        libpacket::type::ipv4_address(ntohl(netif_target->gw.u_addr.ip4.addr));
+    auto ipv4_netmask = libpacket::type::ipv4_address(
+        ntohl(netif_target->netmask.u_addr.ip4.addr));
+    auto ipv4_intf_addr = libpacket::type::ipv4_address(
+        ntohl(netif_target->ip_addr.u_addr.ip4.addr));
+
+    auto intf_mac_addr = libpacket::type::mac_address(netif_target->hwaddr);
+    //netif_target->hwaddr
 
     auto& sequence = impl.sequence();
 
-    std::map<libpacket::type::ipv4_address, libpacket::type::mac_address> resolved_addresses;
-                        //   - "198.51.100.200"
-                        //   - "198.51.100.201"
-                        //   - "198.51.100.202"
-                        //   - "198.51.100.1"
-    resolved_addresses.emplace(std::make_pair(libpacket::type::ipv4_address("198.51.100.1"), libpacket::type::mac_address("00:10:94:ae:d6:11")));
-    resolved_addresses.emplace(std::make_pair(libpacket::type::ipv4_address("198.51.100.200"), libpacket::type::mac_address("00:10:94:ae:d6:20")));
-    resolved_addresses.emplace(std::make_pair(libpacket::type::ipv4_address("198.51.100.201"), libpacket::type::mac_address("00:10:94:ae:d6:21")));
-    resolved_addresses.emplace(std::make_pair(libpacket::type::ipv4_address("198.51.100.202"), libpacket::type::mac_address("00:10:94:ae:d6:22")));
+    std::map<libpacket::type::ipv4_address, libpacket::type::mac_address>
+        resolved_addresses;
+    //   - "198.51.100.200"
+    //   - "198.51.100.201"
+    //   - "198.51.100.202"
+    //   - "198.51.100.1"
+    resolved_addresses.emplace(
+        std::make_pair(libpacket::type::ipv4_address("198.51.100.1"),
+                       libpacket::type::mac_address("00:10:94:ae:d6:11")));
+    resolved_addresses.emplace(
+        std::make_pair(libpacket::type::ipv4_address("198.51.100.200"),
+                       libpacket::type::mac_address("00:10:94:ae:d6:20")));
+    resolved_addresses.emplace(
+        std::make_pair(libpacket::type::ipv4_address("198.51.100.201"),
+                       libpacket::type::mac_address("00:10:94:ae:d6:21")));
+    resolved_addresses.emplace(
+        std::make_pair(libpacket::type::ipv4_address("198.51.100.202"),
+                       libpacket::type::mac_address("00:10:94:ae:d6:22")));
     // FIXME: this should be an unordered_set.
-    //std::set<libpacket::type::ipv4_address> addresses_to_arp;
+    // std::set<libpacket::type::ipv4_address> addresses_to_arp;
     std::for_each(sequence.begin(), sequence.end(), [&](auto seq) {
         // using view_type =
         // std::tuple<unsigned,                             /* flow idx */
@@ -456,51 +502,68 @@ reply_msg server::handle_request(const request_start_generator& request)
         printf("packet flags are: %08x\n", pkt_flags.value);
 
         if (pkt_flags & packetio::packet::packet_type::ip::ipv4) {
-            const auto ipv4 =
-                reinterpret_cast<const libpacket::protocol::ipv4*>(
-                    hdr_ptr + hdr_lens.layer2);
+            auto ipv4 = const_cast<libpacket::protocol::ipv4*>(reinterpret_cast<const libpacket::protocol::ipv4*>(
+                hdr_ptr + hdr_lens.layer2));
             auto ip_addr = get_ipv4_destination(*ipv4);
 
-            auto eth =
-                reinterpret_cast<libpacket::protocol::ethernet*>(const_cast<uint8_t*>(hdr_ptr));
+            // update source IP
+            set_ipv4_source(*ipv4, ipv4_intf_addr);
 
+            auto eth = reinterpret_cast<libpacket::protocol::ethernet*>(
+                const_cast<uint8_t*>(hdr_ptr));
+
+            // update source MAC
+            set_ethernet_source(*eth, intf_mac_addr);
+
+            // Figure out where to get destination MAC from (gateway or host via arp)
             if (same_ipv4_subnet(ipv4_gateway, ip_addr, ipv4_netmask)) {
                 auto dst_pair = resolved_addresses.find(ip_addr);
                 if (dst_pair == resolved_addresses.end()) {
                     // ERROR!
-                    std::cout << "could not find resolved MAC for IP address: " << ipv4_gateway << std::endl;
+                    std::cout << "could not find resolved MAC for IP address: "
+                              << ipv4_gateway << std::endl;
                 }
 
                 // This prints out whatever's in the config file.
-                std::cout << "prior to updating, dest mac is: " << get_ethernet_destination(*eth) << std::endl;
+                std::cout << "prior to updating, dest mac is: "
+                          << get_ethernet_destination(*eth) << std::endl;
 
-                std::cout << "updating dest mac for target " << ip_addr << " to " << dst_pair->second << std::endl;
+                std::cout << "updating dest mac for target " << ip_addr
+                          << " to " << dst_pair->second << std::endl;
 
                 // no error here.
                 set_ethernet_destination(*eth, dst_pair->second);
 
-                // this prints the expected MAC from resolved_addresses structure.
-                std::cout << "updated dest mac is: " << get_ethernet_destination(*eth) << std::endl;
+                // this prints the expected MAC from resolved_addresses
+                // structure.
+                std::cout << "updated dest mac is: "
+                          << get_ethernet_destination(*eth) << std::endl;
             } else {
-                //addresses_to_arp.insert(ipv4_gateway);
+                // addresses_to_arp.insert(ipv4_gateway);
                 auto dst_pair = resolved_addresses.find(ipv4_gateway);
                 if (dst_pair == resolved_addresses.end()) {
                     // ERROR!
-                    std::cout << "could not find resolved MAC for IP address: " << ipv4_gateway << std::endl;
+                    std::cout << "could not find resolved MAC for IP address: "
+                              << ipv4_gateway << std::endl;
                 }
 
                 // This prints out whatever's in the config file.
-                std::cout << "prior to updating, dest mac is: " << get_ethernet_destination(*eth) << std::endl;
+                std::cout << "prior to updating, dest mac is: "
+                          << get_ethernet_destination(*eth) << std::endl;
 
-                std::cout << "updating dest mac for target " << ip_addr << " to " << dst_pair->second << std::endl;
+                std::cout << "updating dest mac for target " << ip_addr
+                          << " to " << dst_pair->second << std::endl;
 
                 // no error here.
                 set_ethernet_destination(*eth, dst_pair->second);
 
-                // this prints the expected MAC from resolved_addresses structure.
-                std::cout << "updated dest mac is: " << get_ethernet_destination(*eth) << std::endl;
+                // this prints the expected MAC from resolved_addresses
+                // structure.
+                std::cout << "updated dest mac is: "
+                          << get_ethernet_destination(*eth) << std::endl;
 
-                // Somehow after this the value is lost and subsequent calls return to whatever's in the config file.
+                // Somehow after this the value is lost and subsequent calls
+                // return to whatever's in the config file.
             }
 
             std::cout << "ipv4 destination is: " << ip_addr << std::endl;
