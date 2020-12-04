@@ -11,28 +11,15 @@
 #include "lib/packet/type/mac_address.hpp"
 
 namespace openperf::packet::generator {
-struct to_learn
-{
-    std::vector<libpacket::type::ipv4_address> ipv4_addresses;
-};
 
-struct learning_params
-{
-    netif* intf = nullptr;
-    std::vector<libpacket::type::ipv4_address> ipv4_addresses;
-};
+using unresolved = std::monostate;
+using mac_type = std::variant<unresolved, libpacket::type::mac_address>;
 
-struct learning_results
-{
-    using unresolved = std::monostate;
-    using mac_type = std::variant<unresolved, libpacket::type::mac_address>;
+// XXX: this should be an unordered_map, but it doesn't like
+// ipv4_address class as the key type.
+using learning_result_map = std::map<libpacket::type::ipv4_address, mac_type>;
 
-    // FIXME: this should be an unordered_map, but that class doesn't like
-    // ipv4_address class as the key type.
-    using result_map = std::map<libpacket::type::ipv4_address, mac_type>;
-    result_map results;
-};
-
+// Concrete types representing individual states.
 struct state_start
 {};
 struct state_learning
@@ -48,28 +35,85 @@ using learning_state = std::variant<std::monostate,
                                     state_done,
                                     state_timeout>;
 
+/**
+ * @brief Finite State Machine class that handles MAC learning.
+ *
+ */
 class learning_state_machine
 {
 public:
-    bool start_learning(learning_params& lp);
+    /**
+     * @brief Start MAC learning process.
+     *
+     * @param interface lwip interface to use for learning
+     * @param to_learn list of IP addresses to learn
+     * @return true if learning started successfully
+     * @return false learning did not start
+     */
+    bool
+    start_learning(netif* interface,
+                   const std::vector<libpacket::type::ipv4_address>& to_learn);
+
+    /**
+     * @brief Retry failed MAC learning items.
+     *
+     * @return true if learning started successfully
+     * @return false learning did not start
+     */
+    bool retry_failed();
+
+    /**
+     * @brief Update resolved addresses from lwip stack MAC learning cache.
+     *
+     */
     void check_learning();
-    const learning_params& get_params() { return params; }
 
-    const learning_results& get_results() { return results; }
+    /**
+     * @brief Drive state machine to completion state (state_done if all entries
+     * resolved, state_timeout otherwise.)
+     *
+     */
+    void stop_learning();
 
+    const learning_result_map& get_results() { return results; }
+
+    /**
+     * @brief Did learning resolve all requested MAC addresses?
+     *
+     * Will return false if called before learning started.
+     *
+     * @return true all requested MAC addresses resolved
+     * @return false at least one requested MAC address did not resolve.
+     */
     bool resolved()
     {
         return (std::holds_alternative<state_done>(current_state));
     }
 
+    /**
+     * @brief Shorthand for state machine starting up or in process of learning.
+     *
+     * @return true state machine learning in progress.
+     * @return false state machine learning stopped.
+     */
     bool in_progress()
     {
-        return (std::holds_alternative<state_start>(current_state) || std::holds_alternative<state_learning>(current_state));
+        return (std::holds_alternative<state_start>(current_state)
+                || std::holds_alternative<state_learning>(current_state));
     }
 
 private:
-    learning_params params; // FIXME: reduce this down to just the interface. no need to save the whole struct.
-    learning_results results; // FIXME: pass this to the learning process too.
+    /**
+     * @brief Internal impl method used by start/retry methods since
+     * implementation is mostly the same.
+     *
+     * @return true learning started
+     * @return false learning did nto start
+     */
+    bool start_learning_impl();
+
+    netif* intf = nullptr;
+    learning_result_map results;
     learning_state current_state;
 };
 

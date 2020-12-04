@@ -1,148 +1,158 @@
 #include "packet/generator/learning.hpp"
 
-#include "packet/stack/lwip/tcpip.hpp"
 #include "lwip/priv/tcpip_priv.h"
-#include "lwip/sys.h"
-#include "lwip/memp.h"
-#include "lwip/mem.h"
-#include "lwip/init.h"
-#include "lwip/ip.h"
-#include "lwip/pbuf.h"
 #include "lwip/etharp.h"
-#include "netif/ethernet.h"
 #include "arpa/inet.h"
 
 #include <future>
 
-// FIXME: prolly not needed for production
-#include <iostream>
-
 namespace openperf::packet::generator {
 
+static constexpr std::chrono::seconds learning_start_timeout(1);
+static constexpr std::chrono::seconds learning_check_timeout(1);
+
+bool all_addresses_resolved(const learning_result_map& results);
+
+// Structure that gets "passed" to the stack thread via tcpip_callback.
 struct start_learning_params
 {
-    learning_params& params;
-    std::promise<err_t> barrier;
+    netif* intf = nullptr;               // lwip interface to use.
+    const learning_result_map& to_learn; // addresses to learn.
+    std::promise<err_t> barrier; // keep generator and stack threads in sync.
 };
 
-static void really_start_learning(void* arg)
+static void send_learning_requests(void* arg)
 {
     auto slp = reinterpret_cast<start_learning_params*>(arg);
 
-    // learning_params.ipv4_addresses contains a unique list of IPv4 addresses
-    // to learn.
-    // Addresses are assumed to be on-link. Caller must apply routing logic, and
-    // must not send IP addresses from a different subnet.
+    // start_learning_params contains a unique list of IP addresses to learn.
+    // Addresses are assumed to be on-link. Caller must first apply routing
+    // logic. Caller must not send IP addresses from a different subnet.
 
-    std::for_each(slp->params.ipv4_addresses.begin(),
-                  slp->params.ipv4_addresses.end(),
-                  [&](auto& addr) {
-                      // FIXME: eventually we'll get the result map here.
-                      // read-only of course.
-                      // Iterate through it and try to learn all IPs that have a
-                      // corresponding MAC in unresolved state. This will let us
-                      // do retry the same way we do regular learning.
-                      // Especially since the stack automatically retries things
-                      // for us. So our retry is just gravy. OR could make
-                      // manual control over learning only retry failed items...
+    err_t overall_result = ERR_OK;
+    std::for_each(
+        slp->to_learn.begin(), slp->to_learn.end(), [&](const auto& addr_pair) {
+            // If we've already had an error don't bother trying to learn this
+            // address.
+            if (overall_result != ERR_OK) { return; }
 
-                      ip4_addr_t target;
-                      // FIXME: need to memcpy stuff here. addr.data() returns a
-                      // pointer to the first octet of the ip addr.
-                      memcpy(&target.addr, addr.data(), addr.width);
-                      // target.addr = *addr.data();
-                      // addr.width;
+            // Is this entry unresolved?
+            // Don't repeat learning for addresses we've already resolved.
+            if (!std::holds_alternative<unresolved>(addr_pair.second)) {
+                return;
+            }
 
-                      printf("going to learn MAC for IP: %x\n", target.addr);
+            ip4_addr_t target;
 
-                      auto result =
-                          etharp_query(slp->params.intf, &target, nullptr);
-                      if (result != ERR_OK) {
-                          std::cout << "got error back from etharp_query!"
-                                    << std::endl;
-                      }
-                  });
+            memcpy(&target.addr, addr_pair.first.data(), addr_pair.first.width);
 
-    // FIXME: eventually return a summary of the etharp_query return values.
-    // For now assume everything went according to plan.
-    // Strictly speaking we don't have to return anything and could make it
-    // std::promise<void>.
-    slp->barrier.set_value(ERR_OK);
+            OP_LOG(OP_LOG_TRACE,
+                   "Sending ARP request for IP: %s\n",
+                   to_string(addr_pair.first).c_str());
 
-    // err_t etharp_query(struct netif *netif, const ip4_addr_t *ipaddr, struct
-    // pbuf *q);
-    // ip4_addr_t target;
-    // target.addr = htonl(0xc6336414);
+            auto result = etharp_query(slp->intf, &target, nullptr);
+            if (result != ERR_OK) {
+                OP_LOG(OP_LOG_ERROR,
+                       "Error (%s) encountered while requesting ARP for "
+                       "address: %s",
+                       lwip_strerr(result),
+                       to_string(addr_pair.first).c_str());
+                overall_result = result;
+            }
+        });
 
-    // auto result = etharp_query(lp->intf, &target, nullptr);
-    // if (result != ERR_OK) {
-    //     std::cout << "got error back from etharp_query!" << std::endl;
-    // }
+    // Return ERR_OK if nothing went wrong, else first error we encountered.
+    // Since we stop trying after the first error technically that would be the
+    // only error.
+    slp->barrier.set_value(overall_result);
 }
 
 // Return true if learning started, false otherwise.
-bool learning_state_machine::start_learning(learning_params& lp)
+bool learning_state_machine::start_learning(
+    netif* interface,
+    const std::vector<libpacket::type::ipv4_address>& to_learn)
 {
     // If we're already learning, don't start again.
     if (in_progress()) { return (false); }
 
-    current_state = state_start{};
+    // Are we being asked to learn nothing?
+    if (to_learn.empty()) { return (false); }
 
-    params = std::move(lp);
-    results.results.clear();
+    intf = interface;
+    results.clear();
 
     // Populate results with IP addresses.
     std::transform(
-        params.ipv4_addresses.begin(),
-        params.ipv4_addresses.end(),
-        std::inserter(results.results, results.results.end()),
-        [](auto& ip_addr) {
-            return (std::make_pair(ip_addr, learning_results::unresolved{}));
-        });
+        to_learn.begin(),
+        to_learn.end(),
+        std::inserter(results, results.end()),
+        [](auto& ip_addr) { return (std::make_pair(ip_addr, unresolved{})); });
 
-    start_learning_params slp = {.params = this->params};
+    return (start_learning_impl());
+}
+
+bool learning_state_machine::retry_failed()
+{
+    // Are we being asked to retry when no items failed?
+    if (all_addresses_resolved(results)) { return (false); }
+
+    return (start_learning_impl());
+}
+
+bool learning_state_machine::start_learning_impl()
+{
+    // If we're already learning, don't start again.
+    if (in_progress()) { return (false); }
+
+    // Are we being asked to learn nothing?
+    if (results.empty()) { return (false); }
+
+    // Do we have a valid interface to learn on?
+    if (intf == nullptr) { return (false); }
+
+    current_state = state_start{};
+
+    start_learning_params slp = {.intf = this->intf, .to_learn = this->results};
     auto barrier = slp.barrier.get_future();
 
-    if (auto res = tcpip_callback(really_start_learning, &slp); res != ERR_OK) {
+    // tcpip_callback executes the given function in the stack thread passing it
+    // the second argument as void*.
+    // send_learning_requests is smart enough to only send requests for results
+    // in the unresolved state.
+    if (auto res = tcpip_callback(send_learning_requests, &slp);
+        res != ERR_OK) {
+        current_state = state_timeout{};
+        return (true);
+    }
+
+    // Wait for the all the learning requests to send.
+    // We could just return. But it's useful to know if the process succeeded.
+    // Plus, the process is non-blocking on the stack side so this won't take
+    // long.
+    if (barrier.wait_for(learning_start_timeout) != std::future_status::ready) {
+        OP_LOG(OP_LOG_ERROR, "Timed out while starting learning.");
         current_state = state_timeout{};
         return (false);
     }
 
-    barrier.wait();
-
-    // FIXME: add callback here to start periodically polling learning results.
-    // For now have the caller simulate the behavior.
+    auto learning_status = barrier.get();
+    if (learning_status != ERR_OK) { current_state = state_timeout{}; }
 
     current_state = state_learning{};
 
     return (true);
 }
 
+// Structure that gets "passed" to the stack thread via tcpip_callback.
 struct check_learning_params
 {
-    learning_results& results;
-    std::promise<err_t> barrier;
+    learning_result_map& results;
+    std::promise<void> barrier;
 };
 
 static void check_arp_cache(void* arg)
 {
     auto clp = reinterpret_cast<check_learning_params*>(arg);
-    auto& results = clp->results.results;
-
-    // FIXME: for debugging only.
-    std::for_each(results.begin(), results.end(), [](auto& item_pair) {
-        std::cout << "checking if this address resolved: " << item_pair.first
-                  << std::endl;
-    });
-
-    // err_t etharp_query(struct netif *netif, const ip4_addr_t *ipaddr, struct
-    // pbuf *q);
-    // ip4_addr_t target;
-    // target.addr = htonl(0xc6336414);
-
-    // ip4_addr_t entryAddr;
-    // eth_addr entryMac;
-    // netif entryIntf;
 
     ip4_addr_t* entryAddrPtr = nullptr;
     eth_addr* entryMacPtr = nullptr;
@@ -155,18 +165,13 @@ static void check_arp_cache(void* arg)
 
         if (!stable_entry) { continue; }
 
-        // be careful here. network byte order problems can happen.
-        auto found_result = results.find(
+        auto found_result = clp->results.find(
             libpacket::type::ipv4_address(ntohl(entryAddrPtr->addr)));
-        if (found_result == results.end()) {
+        if (found_result == clp->results.end()) {
             // Guess we weren't looking for this address.
             // Remember, the stack is shared by all generators.
             continue;
         }
-
-        std::cout
-            << "found a match for this IP while really checking learning: "
-            << found_result->first << std::endl;
 
         if (std::holds_alternative<libpacket::type::mac_address>(
                 found_result->second)) {
@@ -174,100 +179,63 @@ static void check_arp_cache(void* arg)
             continue;
         }
 
-        std::cout << "gonna store resolved MAC for this IP: "
-                  << found_result->first << std::endl;
-
-        printf("Resolved MAC: %x %x %x %x %x %x\n",
-               entryMacPtr->addr[0],
-               entryMacPtr->addr[1],
-               entryMacPtr->addr[2],
-               entryMacPtr->addr[3],
-               entryMacPtr->addr[4],
-               entryMacPtr->addr[5]);
-
         found_result->second.emplace<libpacket::type::mac_address>(
             (const uint8_t*)entryMacPtr->addr);
     }
 
-    clp->barrier.set_value(ERR_OK);
-
-    // bool resolved = false;
-    // for (size_t i = 0; i < ARP_TABLE_SIZE; i++) {
-    //     // int etharp_get_entry(size_t i, ip4_addr_t **ipaddr, struct netif
-    //     // **netif, struct eth_addr **eth_ret);
-    //     auto found =
-    //         etharp_get_entry(i, &entryAddrPtr, &entryIntfPtr, &entryMacPtr);
-
-    //     if (found) {
-    //         printf("offset: %lu, target.addr: %x, entryAddr: %x\n",
-    //                i,
-    //                target.addr,
-    //                entryAddrPtr->addr);
-    //         if (target.addr == entryAddrPtr->addr) {
-    //             resolved = true;
-    //             break;
-    //         }
-    //     }
-    // }
-
-    // std::cout << "IP address resolved? " << std::boolalpha << resolved
-    //           << std::endl;
-
-    // if (entryAddrPtr)
-    //     std::cout << "IP: " << std::hex << ntohl(entryAddrPtr->addr);
-    // if (entryMacPtr)
-    //     // std::cout << " MAC: " << std::hex << entryMacPtr->addr[5];
-    //     printf(" MAC: %x", entryMacPtr->addr[5]);
-    // if (entryIntfPtr)
-    //     std::cout << " interface: " << std::hex << entryIntfPtr->num
-    //               << std::endl;
-
-    // auto result = etharp_query(lp->intf, &target, nullptr);
-    // if (result != ERR_OK) {
-    //     std::cout << "got error back from etharp_query!" << std::endl;
+    clp->barrier.set_value();
 }
 
-bool all_addresses_resolved(const learning_results& results)
+bool all_addresses_resolved(const learning_result_map& results)
 {
-    auto first_unresolved = std::find_if(
-        results.results.begin(),
-        results.results.end(),
-        [](const auto& address_pair) {
-            return std::holds_alternative<learning_results::unresolved>(
-                address_pair.second);
-        });
-
-    return (first_unresolved == results.results.end());
+    return (std::none_of(
+        results.begin(), results.end(), [](const auto& address_pair) {
+            return std::holds_alternative<unresolved>(address_pair.second);
+        }));
 }
 
 void learning_state_machine::check_learning()
 {
-    std::cout << "ENTER check_learning" << std::endl;
-    // FIXME: need this?
-    // if (results.results.empty()) { return; }
+    // Are there results to check?
+    if (results.empty()) { return; }
 
-    // FIXME: make sure this is only called once at a time. Running multiple
-    // copies at the same time could cause serious problems with updating the
-    // data structure.
-
-    // struct check_learning_params
-    // {
-    //     learning_results& results;
-    //     std::promise<err_t> barrier;
-    // };
+    // Are we in the process of learning?
+    if (!std::holds_alternative<state_learning>(current_state)) { return; }
 
     check_learning_params clp = {.results = this->results};
     auto barrier = clp.barrier.get_future();
 
-    tcpip_callback(check_arp_cache, &clp);
-    // FIXME: check_arp_cache doesn't do much. safest to block while the check
-    // is being done.
-    // usleep(500000); // simulate blocking while callback does its thing. 0.5
-    // seconds.
+    // tcpip_callback executes the given function in the stack thread passing it
+    // the second argument as void*.
+    if (auto res = tcpip_callback(check_arp_cache, &clp); res != ERR_OK) {
+        current_state = state_timeout{};
+        return;
+    }
 
-    barrier.wait();
+    // Wait for the all the learning requests to send.
+    // We could just return. But it's useful to know if the process succeeded.
+    // Plus, the process is non-blocking on the stack side so this won't take
+    // long.
+    if (barrier.wait_for(learning_check_timeout) != std::future_status::ready) {
+        OP_LOG(OP_LOG_ERROR, "Timed out while checking learning status.");
+        current_state = state_timeout{};
+        return;
+    }
+
+    // auto check_result = barrier.get();
+    // if (check_result != ERR_OK) { current_state = state_timeout{}; }
 
     if (all_addresses_resolved(results)) { current_state = state_done{}; }
+}
+
+void learning_state_machine::stop_learning()
+{
+    if (all_addresses_resolved(results)) {
+        current_state = state_done{};
+        return;
+    }
+
+    current_state = state_timeout{};
 }
 
 } // namespace openperf::packet::generator
