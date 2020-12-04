@@ -75,7 +75,7 @@ public:
      */
     void stop_learning();
 
-    const learning_result_map& get_results() { return results; }
+    const learning_result_map& get_results() { return m_results; }
 
     /**
      * @brief Did learning resolve all requested MAC addresses?
@@ -87,7 +87,7 @@ public:
      */
     bool resolved()
     {
-        return (std::holds_alternative<state_done>(current_state));
+        return (std::holds_alternative<state_done>(m_current_state));
     }
 
     /**
@@ -98,8 +98,8 @@ public:
      */
     bool in_progress()
     {
-        return (std::holds_alternative<state_start>(current_state)
-                || std::holds_alternative<state_learning>(current_state));
+        return (std::holds_alternative<state_start>(m_current_state)
+                || std::holds_alternative<state_learning>(m_current_state));
     }
 
 private:
@@ -112,9 +112,9 @@ private:
      */
     bool start_learning_impl();
 
-    netif* intf = nullptr;
-    learning_result_map results;
-    learning_state current_state;
+    netif* m_intf = nullptr;
+    learning_result_map m_results;
+    learning_state m_current_state;
 };
 
 } // namespace openperf::packet::generator

@@ -78,14 +78,14 @@ bool learning_state_machine::start_learning(
     // Are we being asked to learn nothing?
     if (to_learn.empty()) { return (false); }
 
-    intf = interface;
-    results.clear();
+    m_intf = interface;
+    m_results.clear();
 
     // Populate results with IP addresses.
     std::transform(
         to_learn.begin(),
         to_learn.end(),
-        std::inserter(results, results.end()),
+        std::inserter(m_results, m_results.end()),
         [](auto& ip_addr) { return (std::make_pair(ip_addr, unresolved{})); });
 
     return (start_learning_impl());
@@ -94,7 +94,7 @@ bool learning_state_machine::start_learning(
 bool learning_state_machine::retry_failed()
 {
     // Are we being asked to retry when no items failed?
-    if (all_addresses_resolved(results)) { return (false); }
+    if (all_addresses_resolved(m_results)) { return (false); }
 
     return (start_learning_impl());
 }
@@ -105,14 +105,14 @@ bool learning_state_machine::start_learning_impl()
     if (in_progress()) { return (false); }
 
     // Are we being asked to learn nothing?
-    if (results.empty()) { return (false); }
+    if (m_results.empty()) { return (false); }
 
     // Do we have a valid interface to learn on?
-    if (intf == nullptr) { return (false); }
+    if (m_intf == nullptr) { return (false); }
 
-    current_state = state_start{};
+    m_current_state = state_start{};
 
-    start_learning_params slp = {.intf = this->intf, .to_learn = this->results};
+    start_learning_params slp = {.intf = this->m_intf, .to_learn = this->m_results};
     auto barrier = slp.barrier.get_future();
 
     // tcpip_callback executes the given function in the stack thread passing it
@@ -121,7 +121,7 @@ bool learning_state_machine::start_learning_impl()
     // in the unresolved state.
     if (auto res = tcpip_callback(send_learning_requests, &slp);
         res != ERR_OK) {
-        current_state = state_timeout{};
+        m_current_state = state_timeout{};
         return (true);
     }
 
@@ -131,14 +131,14 @@ bool learning_state_machine::start_learning_impl()
     // long.
     if (barrier.wait_for(learning_start_timeout) != std::future_status::ready) {
         OP_LOG(OP_LOG_ERROR, "Timed out while starting learning.");
-        current_state = state_timeout{};
+        m_current_state = state_timeout{};
         return (false);
     }
 
     auto learning_status = barrier.get();
-    if (learning_status != ERR_OK) { current_state = state_timeout{}; }
+    if (learning_status != ERR_OK) { m_current_state = state_timeout{}; }
 
-    current_state = state_learning{};
+    m_current_state = state_learning{};
 
     return (true);
 }
@@ -197,18 +197,18 @@ bool all_addresses_resolved(const learning_result_map& results)
 void learning_state_machine::check_learning()
 {
     // Are there results to check?
-    if (results.empty()) { return; }
+    if (m_results.empty()) { return; }
 
     // Are we in the process of learning?
-    if (!std::holds_alternative<state_learning>(current_state)) { return; }
+    if (!std::holds_alternative<state_learning>(m_current_state)) { return; }
 
-    check_learning_params clp = {.results = this->results};
+    check_learning_params clp = {.results = this->m_results};
     auto barrier = clp.barrier.get_future();
 
     // tcpip_callback executes the given function in the stack thread passing it
     // the second argument as void*.
     if (auto res = tcpip_callback(check_arp_cache, &clp); res != ERR_OK) {
-        current_state = state_timeout{};
+        m_current_state = state_timeout{};
         return;
     }
 
@@ -218,24 +218,24 @@ void learning_state_machine::check_learning()
     // long.
     if (barrier.wait_for(learning_check_timeout) != std::future_status::ready) {
         OP_LOG(OP_LOG_ERROR, "Timed out while checking learning status.");
-        current_state = state_timeout{};
+        m_current_state = state_timeout{};
         return;
     }
 
     // auto check_result = barrier.get();
     // if (check_result != ERR_OK) { current_state = state_timeout{}; }
 
-    if (all_addresses_resolved(results)) { current_state = state_done{}; }
+    if (all_addresses_resolved(m_results)) { m_current_state = state_done{}; }
 }
 
 void learning_state_machine::stop_learning()
 {
-    if (all_addresses_resolved(results)) {
-        current_state = state_done{};
+    if (all_addresses_resolved(m_results)) {
+        m_current_state = state_done{};
         return;
     }
 
-    current_state = state_timeout{};
+    m_current_state = state_timeout{};
 }
 
 } // namespace openperf::packet::generator
