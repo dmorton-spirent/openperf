@@ -5,7 +5,7 @@ SOCK_COMMON_SOURCES += \
 
 #ifeq ($(PLATFORM),linux)
 ifneq (, $(filter $(PLATFORM), linux stc))
-	SOCK_COMMON += process_control_linux.cpp
+	SOCK_COMMON_SOURCES += process_control_linux.cpp
 	SOCKSRV_LDLIBS += -lcap
 	SOCKCLI_LDLIBS += -lcap
 endif
@@ -30,7 +30,8 @@ SOCKSRV_SOURCES += \
 	server/tcp_socket.cpp \
 	server/udp_socket.cpp
 
-ifeq ($(PLATFORM),linux)
+#ifeq ($(PLATFORM),linux)
+ifneq (, $(filter $(PLATFORM), linux stc))
 SOCKSRV_SOURCES += \
 		server/packet_socket.cpp \
 		server/socket_factory_linux.cpp

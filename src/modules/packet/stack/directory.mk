@@ -25,7 +25,8 @@ STACK_SOURCES += \
 	utils.cpp
 
 # packet sockets require linux headers
-ifeq ($(PLATFORM), linux)
+#ifeq ($(PLATFORM), linux)
+ifneq (, $(filter $(PLATFORM), linux stc))
 	STACK_SOURCES += lwip/packet.cpp
 endif
 
