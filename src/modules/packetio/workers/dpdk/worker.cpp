@@ -37,6 +37,22 @@ static const rte_gro_param gro_params = {.gro_types = RTE_GRO_TCP_IPV4,
                                          .max_item_per_flow = pkt_burst_size};
 
 /**
+ * BYOS = Bring Your Own Stack mode
+ * Give users the option to bypass the internal LwIP stack in favor of their
+ * own. Users understand that they lose the ability to attach sources and sinks
+ * to interfaces in this mode. For performance reasons this is a compile-time
+ * decision.
+ *
+ * Packets are exported to user's stack via DPDK queue (configured via REST
+ * API).
+ */
+#ifdef OP_PACKETIO_DPDK_BYOS_MODE
+static constexpr bool brought_own_stack = true;
+#else
+static constexpr bool brought_own_stack = false;
+#endif
+
+/**
  * We only have two states we transition between, based on our messages:
  * stopped and started.  We use each struct as a tag for each state.  And
  * we wrap them all in std::variant for ease of use.
@@ -489,6 +505,57 @@ static void rx_sink_dispatch(const fib* fib,
     }
 }
 
+static void
+rx_ext_stack_dispatch(const rx_queue* rxq, rte_mbuf* incoming[], uint16_t n)
+{
+    uint16_t nb_to_free = 0, nb_to_stack = 0;
+    std::array<rte_mbuf*, pkt_burst_size> to_stack, to_free;
+    auto has_hardware_tags = (rxq->flags() & rx_feature_flags::hardware_tags);
+
+    auto [to_stack_last, to_free_last] = std::partition_copy(
+        incoming,
+        incoming + n,
+        to_stack.data(),
+        to_free.data(),
+        [&](auto mbuf) {
+            // Filter signature packets from being
+            // processed by the stack
+            if (mbuf_signature_avail(mbuf)) return false;
+            if (has_hardware_tags) {
+                // Filter packets with hardware tags
+                if (!(mbuf->ol_flags & PKT_RX_FDIR) || !mbuf->hash.fdir.hi) {
+                    return false;
+                }
+            }
+            return true;
+        });
+    nb_to_stack = std::distance(to_stack.data(), to_stack_last);
+    nb_to_free = std::distance(to_free.data(), to_free_last);
+
+    /* Hand any stack packets off to the stack... */
+    if (nb_to_stack) {
+        /*
+         * If we don't have hardware LRO support, try to coalesce some
+         * packets before handing them up the stack.
+         */
+        if (!(rxq->flags() & rx_feature_flags::hardware_lro)) {
+            nb_to_stack = rte_gro_reassemble_burst(
+                to_stack.data(), nb_to_stack, &gro_params);
+        }
+
+        // FIXME: add DPDK queue insertion here.
+        // Somewhere in the CLI args/API we'd add a new parameter for user to specify outgoing queue name.
+        // And add freeing here maybe? Unclear if inserting into queue requires OP to handle cleanup.
+    }
+
+    /* ... and free all the non-stack packets */
+    std::for_each(to_free.data(), to_free.data() + nb_to_free, [](auto mbuf) {
+        rx_mbuf_clear_tag(mbuf);       // Clear just to be safe
+        rx_mbuf_signature_clear(mbuf); // Prevent leaks when buffer is reused
+        rte_pktmbuf_free(mbuf);
+    });
+}
+
 static uint16_t rx_burst(const fib* fib, const rx_queue* rxq)
 {
     std::array<rte_mbuf*, pkt_burst_size> incoming;
@@ -508,8 +575,13 @@ static uint16_t rx_burst(const fib* fib, const rx_queue* rxq)
     /* Dispatch packets to any port sinks */
     rx_sink_dispatch(fib, rxq, incoming.data(), n);
 
-    /* Dispatch packets to all interface level sinks and interfaces */
-    rx_interface_dispatch(fib, rxq, incoming.data(), n);
+    if constexpr (brought_own_stack) {
+        /* Dispatch packets to user-provided stack */
+        rx_ext_stack_dispatch(rxq, incoming.data(), n);
+    } else {
+        /* Dispatch packets to all interface level sinks and interfaces */
+        rx_interface_dispatch(fib, rxq, incoming.data(), n);
+    }
 
     return (n);
 }
